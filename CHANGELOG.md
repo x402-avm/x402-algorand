@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-19
+
+### Added
+- Project URLs (`Homepage`, `Documentation`, `Issues`, `Changelog`) and classifiers (Python 3.10–3.13, `Typing :: Typed`, `Development Status :: 4 - Beta`) in `pyproject.toml`.
+- `dev` optional dependencies extra in `pyproject.toml` (`pytest`, `pytest-asyncio`, `ruff`, `build`, `twine`, `httpx`).
+- Public network simulation tests in `tests/test_public_networks.py` covering ALGO and USDC on TestNet and MainNet (`PUBLIC_NETS=1`).
+- Public documentation and agent guidance: comprehensive `README.md` and `AGENTS.md`.
+- Tooling and CI configurations: `ruff.toml`, `.gitignore`, `.editorconfig`, `.github/workflows/ci.yml`, and `.github/dependabot.yml` with ecosystem update groups.
+
+### Changed
+- Made LocalNet tests (`tests/test_localnet_algo_payment.py`, `tests/test_spend_controls.py`, `tests/conftest.py`) self-contained by generating and funding ephemeral test accounts directly from the LocalNet KMD dispenser.
+- Applied code formatting with `ruff` across package and tests with no behavior changes.
+
 ## [0.2.0] - 2026-11-18
 ### Changed
 - x402-algorand is now a plugin for the official `x402` Python SDK (`x402>=2.28,<3`, github.com/x402-foundation/x402). It ships only the
