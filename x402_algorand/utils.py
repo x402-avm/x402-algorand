@@ -1,5 +1,5 @@
 # Copyright 2024 Coinbase; 2026 x402 Foundation; GoPlausible (x402-avm). Licensed under the Apache License 2.0.
-# Modified in 2026 by the AI Economy Team for x402-algorand: accept any algorand:<genesis hash> network (LocalNet, private networks).
+# Modified in 2026 by x402-avm contributors for x402-algorand: accept any algorand:<genesis hash> network (LocalNet, private networks).
 # Changes are listed in the NOTICE file.
 """AVM mechanism utility functions.
 
@@ -10,6 +10,8 @@ for working with Algorand transactions.
 from __future__ import annotations
 
 import base64
+import binascii
+import logging
 import re
 from decimal import Decimal
 from typing import Any
@@ -29,14 +31,21 @@ from x402_algorand.constants import (
     USDC_TESTNET_ASA_ID,
     V1_TO_V2_NETWORK_MAP,
 )
+from x402_algorand.errors import NetworkError, TransactionDecodeError
 from x402_algorand.types import DecodedTransactionInfo, TransactionGroupInfo
 
 try:
     from algosdk import encoding, transaction
-except ImportError as e:
+    from algosdk import error as algosdk_error
+except ImportError as e:  # pragma: no cover - py-algorand-sdk is a hard dependency
     raise ImportError(
-        "AVM mechanism requires py-algorand-sdk. Install with: pip install x402-avm[avm]"
+        "x402-algorand requires py-algorand-sdk. Install with: pip install x402-algorand"
     ) from e
+
+from nacl.exceptions import BadSignatureError
+from nacl.signing import VerifyKey
+
+logger = logging.getLogger("x402_algorand")
 
 
 def is_valid_address(address: str) -> bool:
@@ -57,7 +66,12 @@ def is_valid_address(address: str) -> bool:
     try:
         encoding.decode_address(address)
         return True
-    except Exception:
+    except (
+        algosdk_error.WrongChecksumError,
+        algosdk_error.WrongKeyLengthError,
+        binascii.Error,
+        ValueError,
+    ):
         return False
 
 
@@ -72,16 +86,23 @@ def caip2_from_genesis_hash(genesis_hash: str | bytes) -> str:
 
     Returns:
         CAIP-2 network identifier (e.g. "algorand:wGHE2Pwdvd7S12BL5FaOP20EGYesN73k").
+
+    Raises:
+        TypeError: If ``genesis_hash`` is neither ``str`` nor ``bytes``.
+        NetworkError: If ``genesis_hash`` is not valid base64.
     """
-    if isinstance(genesis_hash, str):
-        raw = base64.b64decode(genesis_hash.replace("-", "+").replace("_", "/"))
-    elif isinstance(genesis_hash, (bytes, bytearray)):
-        if len(genesis_hash) == 32:
-            raw = bytes(genesis_hash)
+    try:
+        if isinstance(genesis_hash, str):
+            raw = base64.b64decode(genesis_hash.replace("-", "+").replace("_", "/"))
+        elif isinstance(genesis_hash, (bytes, bytearray)):
+            if len(genesis_hash) == 32:
+                raw = bytes(genesis_hash)
+            else:
+                raw = base64.b64decode(genesis_hash)
         else:
-            raw = base64.b64decode(genesis_hash)
-    else:
-        raise TypeError(f"Expected str or bytes, got {type(genesis_hash)}")
+            raise TypeError(f"Expected str or bytes, got {type(genesis_hash)}")
+    except binascii.Error as e:
+        raise NetworkError(f"Invalid genesis hash: {e}") from e
     return "algorand:" + base64.urlsafe_b64encode(raw).decode()[:32]
 
 
@@ -139,10 +160,11 @@ def normalize_network(network: str) -> str:
         CAIP-2 network identifier.
 
     Raises:
-        ValueError: If network is not supported or invalid format.
+        NetworkError: If network is not supported or invalid format
+            (subclass of ``ValueError``).
     """
     if not isinstance(network, str):
-        raise ValueError(f"Invalid network type: {type(network)}")
+        raise NetworkError(f"Invalid network type: {type(network)}")
 
     # V1 name mapping
     if network in V1_TO_V2_NETWORK_MAP:
@@ -158,7 +180,7 @@ def normalize_network(network: str) -> str:
     if re.match(r"^algorand:[-_A-Za-z0-9]{1,32}$", network):
         return network
 
-    raise ValueError(f"Unsupported network: {network}")
+    raise NetworkError(f"Unsupported network: {network}")
 
 
 def is_valid_network(network: str) -> bool:
@@ -173,7 +195,7 @@ def is_valid_network(network: str) -> bool:
     try:
         normalize_network(network)
         return True
-    except ValueError:
+    except NetworkError:
         return False
 
 
@@ -187,12 +209,12 @@ def get_network_config(network: str) -> dict[str, Any]:
         NetworkConfig dictionary.
 
     Raises:
-        ValueError: If network is not supported.
+        NetworkError: If network is not supported (subclass of ``ValueError``).
     """
     caip2 = normalize_network(network)
     config = NETWORK_CONFIGS.get(caip2)
     if not config:
-        raise ValueError(f"Unsupported network: {network}")
+        raise NetworkError(f"Unsupported network: {network}")
     return dict(config)
 
 
@@ -206,12 +228,12 @@ def get_usdc_asa_id(network: str) -> int:
         USDC ASA ID.
 
     Raises:
-        ValueError: If network is not supported.
+        NetworkError: If network is not supported (subclass of ``ValueError``).
     """
     caip2 = normalize_network(network)
     config = NETWORK_CONFIGS.get(caip2)
     if not config:
-        raise ValueError(f"Unsupported network: {network}")
+        raise NetworkError(f"Unsupported network: {network}")
     return config["default_asset"]["asa_id"]
 
 
@@ -225,7 +247,7 @@ def get_genesis_hash(network: str) -> str:
         Base64-encoded 32-byte genesis hash.
 
     Raises:
-        ValueError: If network is unknown or unregistered.
+        NetworkError: If network is unknown or unregistered (subclass of ``ValueError``).
     """
     if (
         isinstance(network, str)
@@ -238,7 +260,7 @@ def get_genesis_hash(network: str) -> str:
     norm = normalize_network(network)
     config = NETWORK_CONFIGS.get(norm)
     if not config or "genesis_hash" not in config:
-        raise ValueError(f"unknown network {norm}: call register_network(genesis_hash) first")
+        raise NetworkError(f"unknown network {norm}: call register_network(genesis_hash) first")
     return config["genesis_hash"]
 
 
@@ -308,34 +330,30 @@ def decode_transaction_bytes(txn_bytes: bytes) -> DecodedTransactionInfo:
         DecodedTransactionInfo with extracted data.
 
     Raises:
-        ValueError: If decoding fails.
+        TransactionDecodeError: If decoding fails (subclass of ``ValueError``).
     """
     try:
         # Note: msgpack_decode expects a base64 string, so encode the raw bytes
         b64_encoded = base64.b64encode(txn_bytes).decode("utf-8")
         decoded = encoding.msgpack_decode(b64_encoded)
-    except Exception as e:
-        raise ValueError(f"Failed to decode transaction: {e}") from e
+    except Exception as e:  # untrusted input: msgpack/algosdk raise many types
+        raise TransactionDecodeError(f"Failed to decode transaction: {e}") from e
 
     # Determine if signed or unsigned
     is_signed = False
     txn_dict: dict[str, Any]
 
-    if isinstance(decoded, dict):
-        if "txn" in decoded:
-            # Signed transaction format: {"sig": ..., "txn": {...}}
-            is_signed = "sig" in decoded or "msig" in decoded or "lsig" in decoded
-            txn_dict = decoded["txn"]
-        else:
-            # Unsigned transaction format
-            txn_dict = decoded
-    elif isinstance(decoded, transaction.SignedTransaction):
+    if isinstance(decoded, transaction.SignedTransaction):
         is_signed = decoded.signature is not None
-        txn_dict = decoded.dictify()["txn"]
+        txn_dict = decoded.transaction.dictify()
+    elif isinstance(decoded, (transaction.MultisigTransaction, transaction.LogicSigTransaction)):
+        # k-of-n multisig and logic signatures are valid authorizations per the spec.
+        is_signed = True
+        txn_dict = decoded.transaction.dictify()
     elif isinstance(decoded, transaction.Transaction):
         txn_dict = decoded.dictify()
     else:
-        raise ValueError(f"Unknown transaction format: {type(decoded)}")
+        raise TransactionDecodeError(f"Unknown transaction format: {type(decoded)}")
 
     # Extract common fields
     txn_type = txn_dict.get("type", "unknown")
@@ -410,12 +428,12 @@ def decode_base64_transaction(b64_txn: str) -> DecodedTransactionInfo:
         DecodedTransactionInfo with extracted data.
 
     Raises:
-        ValueError: If decoding fails.
+        TransactionDecodeError: If decoding fails (subclass of ``ValueError``).
     """
     try:
         txn_bytes = base64.b64decode(b64_txn)
-    except Exception as e:
-        raise ValueError(f"Invalid base64 encoding: {e}") from e
+    except (binascii.Error, TypeError, ValueError) as e:
+        raise TransactionDecodeError(f"Invalid base64 encoding: {e}") from e
 
     return decode_transaction_bytes(txn_bytes)
 
@@ -434,7 +452,7 @@ def decode_payment_group(
         TransactionGroupInfo with all decoded transactions.
 
     Raises:
-        ValueError: If decoding fails.
+        TransactionDecodeError: If decoding fails (subclass of ``ValueError``).
     """
     transactions: list[DecodedTransactionInfo] = []
     total_fee = 0
@@ -549,24 +567,33 @@ def validate_rekey_operations(txns: list[DecodedTransactionInfo]) -> str | None:
     for op in rekey_ops:
         rekeys_by_sender.setdefault(op["from"], []).append(op)
 
-    for _sender, ops in rekeys_by_sender.items():
+    for sender, ops in rekeys_by_sender.items():
         if len(ops) != 2:
             return ERR_REKEY_DETECTED
 
-        first, second = ops
-        # The second rekey's "to" should be the sender (returning authority to self)
-        if second["to"] != _sender and first["to"] != second["to"]:
+        _first, second = ops
+        # The second rekey must return authority to the sender itself.
+        if second["to"] != sender:
             return ERR_REKEY_DETECTED
 
     return None
 
 
-def verify_transaction_signature(b64_txn: str) -> tuple[bool, str]:
-    """Verify the ed25519 signature of a signed transaction matches its sender.
+def _bytes_to_sign(txn: transaction.Transaction) -> bytes:
+    """Return ``b"TX" + canonical msgpack`` for a transaction (what ed25519 signs)."""
+    return b"TX" + base64.b64decode(encoding.msgpack_encode(txn))
 
-    Algorand signs: b"TX" + canonical_msgpack(transaction).
-    This verifies the signature was actually produced by the sender's private key,
-    not just that a signature field exists.
+
+def verify_transaction_signature(b64_txn: str) -> tuple[bool, str]:
+    """Verify that a signed transaction is authorized by its sender (or auth address).
+
+    Algorand signs ``b"TX" + canonical_msgpack(transaction)``. Supported authorizations
+    (as allowed by the exact scheme spec):
+
+    - single ed25519 signature, by the sender or by its ``sgnr`` auth address (rekeyed account);
+    - k-of-n multisig: at least ``threshold`` valid subsignatures;
+    - logic signature: delegated signature checked, or program hash equal to the
+      authorizing address. The program itself is evaluated by ``simulate``.
 
     Args:
         b64_txn: Base64-encoded signed transaction.
@@ -575,61 +602,48 @@ def verify_transaction_signature(b64_txn: str) -> tuple[bool, str]:
         Tuple of (is_valid, error_message). Returns (True, "") on success.
     """
     try:
-        from nacl.exceptions import BadSignatureError
-        from nacl.signing import VerifyKey
-    except ImportError:
-        # nacl not available; simulation will catch invalid signatures
-        return True, ""
-
-    try:
         decoded = encoding.msgpack_decode(b64_txn)
-    except Exception:
+    except Exception:  # untrusted input: msgpack/algosdk raise many types
+        logger.debug("could not decode transaction for signature check", exc_info=True)
         return False, "Failed to decode transaction"
 
-    # Handle SignedTransaction object
+    try:
+        return _check_authorization(decoded)
+    except _SIGNATURE_CHECK_ERRORS:
+        logger.debug("signature check failed", exc_info=True)
+        return False, "Signature does not match sender"
+
+
+_SIGNATURE_CHECK_ERRORS = (
+    BadSignatureError,
+    ValueError,
+    TypeError,
+    algosdk_error.WrongChecksumError,
+    algosdk_error.WrongKeyLengthError,
+)
+
+
+def _check_authorization(decoded: Any) -> tuple[bool, str]:
     if isinstance(decoded, transaction.SignedTransaction):
-        if decoded.signature is None:
+        if not decoded.signature:
             return False, "Transaction has no signature"
-
+        signer_address = decoded.authorizing_address or decoded.transaction.sender
         sig_bytes = base64.b64decode(decoded.signature)
-        sender_pk = encoding.decode_address(decoded.transaction.sender)
-        txn_bytes = base64.b64decode(encoding.msgpack_encode(decoded.transaction))
+        signer_pk = encoding.decode_address(signer_address)
+        VerifyKey(signer_pk).verify(_bytes_to_sign(decoded.transaction), sig_bytes)
+        return True, ""
 
-        try:
-            VerifyKey(sender_pk).verify(b"TX" + txn_bytes, sig_bytes)
+    if isinstance(decoded, transaction.MultisigTransaction):
+        if decoded.multisig.verify(_bytes_to_sign(decoded.transaction)):
             return True, ""
-        except BadSignatureError:
-            return False, "Signature does not match sender"
+        return False, "Multisig signature is invalid or below threshold"
 
-    # Handle raw dict format from msgpack_decode
-    if isinstance(decoded, dict) and "sig" in decoded and "txn" in decoded:
-        sig_bytes = decoded["sig"]
-        sender_pk = decoded["txn"].get("snd", b"")
-        if not sender_pk or len(sender_pk) != 32:
-            return False, "Missing or invalid sender public key"
-
-        # Reconstruct Transaction for canonical msgpack encoding
-        try:
-            txn_type = decoded["txn"].get("type", "pay")
-            if txn_type == "axfer":
-                txn_obj = transaction.AssetTransferTxn.undictify(decoded["txn"])
-            elif txn_type == "pay":
-                txn_obj = transaction.PaymentTxn.undictify(decoded["txn"])
-            else:
-                txn_obj = transaction.Transaction.undictify(decoded["txn"])
-            txn_bytes = base64.b64decode(encoding.msgpack_encode(txn_obj))
-        except Exception:
-            # Can't reconstruct canonical bytes; defer to simulation
+    if isinstance(decoded, transaction.LogicSigTransaction):
+        if decoded.verify():
             return True, ""
+        return False, "Logic signature is invalid"
 
-        try:
-            VerifyKey(sender_pk).verify(b"TX" + txn_bytes, sig_bytes)
-            return True, ""
-        except BadSignatureError:
-            return False, "Signature does not match sender"
-
-    # Unknown format; defer to simulation
-    return True, ""
+    return False, "Transaction has no signature"
 
 
 def validate_fee_payer_transaction(
@@ -732,4 +746,4 @@ def get_default_usdc_info(network: str) -> dict[str, Any]:
             "decimals": DEFAULT_DECIMALS,
         }
     else:
-        raise ValueError(f"Unknown network: {network}")
+        raise NetworkError(f"Unknown network: {network}")

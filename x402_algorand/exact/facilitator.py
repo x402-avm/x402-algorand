@@ -1,5 +1,5 @@
 # Copyright 2024 Coinbase; 2026 x402 Foundation; GoPlausible (x402-avm). Licensed under the Apache License 2.0.
-# Modified in 2026 by the AI Economy Team for x402-algorand: verify native ALGO payments (asset 0).
+# Modified in 2026 by x402-avm contributors for x402-algorand: verify native ALGO payments (asset 0).
 # Changes are listed in the NOTICE file.
 """AVM facilitator implementation for the Exact payment scheme (V2).
 
@@ -9,9 +9,12 @@ Verifies and settles ASA payments on Algorand networks.
 from __future__ import annotations
 
 import base64
+import binascii
+import logging
 import random
 from typing import Any
 
+from algosdk import encoding
 from x402.schemas import (
     Network,
     PaymentPayload,
@@ -43,6 +46,7 @@ from x402_algorand.constants import (
     MAX_GROUP_SIZE,
     SCHEME_EXACT,
     TXN_TYPE_ASSET_TRANSFER,
+    TXN_TYPE_PAYMENT,
 )
 from x402_algorand.signer import FacilitatorAvmSigner
 from x402_algorand.types import DecodedTransactionInfo, ExactAvmPayload
@@ -55,6 +59,14 @@ from x402_algorand.utils import (
     validate_rekey_operations,
     verify_transaction_signature,
 )
+
+logger = logging.getLogger("x402_algorand")
+
+
+def _payment_txid(b64_txn: str) -> str:
+    """Transaction ID of a base64 msgpack (signed or unsigned) transaction."""
+    decoded = encoding.msgpack_decode(b64_txn)
+    return decoded.get_txid()
 
 
 class ExactAvmScheme:
@@ -182,7 +194,8 @@ class ExactAvmScheme:
             for b64_txn in payment_group:
                 txn_info = decode_base64_transaction(b64_txn)
                 decoded_txns.append(txn_info)
-        except Exception as e:
+        except Exception as e:  # untrusted input: report any decode failure as a reason
+            logger.debug("payment group decode failed", exc_info=True)
             return VerifyResponse(
                 is_valid=False,
                 invalid_reason=ERR_GROUP_DECODE_FAILED,
@@ -227,8 +240,6 @@ class ExactAvmScheme:
         required_asset = int(requirements.asset)
 
         if required_asset == 0:
-            from x402_algorand.constants import TXN_TYPE_PAYMENT
-
             if payment_txn.type != TXN_TYPE_PAYMENT:
                 return VerifyResponse(
                     is_valid=False,
@@ -283,11 +294,11 @@ class ExactAvmScheme:
                 payer=payer,
             )
 
-        # Step 8: Check for fee payer and validate if present
+        # Step 8: Validate every transaction sent by a facilitator-managed address
         extra = requirements.extra or {}
         fee_payer_str = extra.get("feePayer")
 
-        signer_addresses = self._signer.get_addresses()
+        signer_addresses = set(self._signer.get_addresses())
 
         # SECURITY: Verify facilitator's signers are not transferring their own funds
         if payment_txn.sender in signer_addresses:
@@ -295,62 +306,58 @@ class ExactAvmScheme:
                 is_valid=False, invalid_reason=ERR_FEE_PAYER_TRANSFERRING, payer=payer
             )
 
-        fee_payer_index: int | None = None
+        fee_payer_indexes: list[int] = []
         if fee_payer_str:
             # Verify that the requested feePayer is managed by this facilitator
             if fee_payer_str not in signer_addresses:
                 return VerifyResponse(
                     is_valid=False, invalid_reason=ERR_FEE_PAYER_NOT_MANAGED, payer=payer
                 )
-
-            # Find fee payer transaction in group
-            for i, txn_info in enumerate(decoded_txns):
-                if txn_info.sender == fee_payer_str:
-                    fee_payer_index = i
-                    break
-
-            if fee_payer_index is None:
+            fee_payer_indexes = _indexes_sent_by(decoded_txns, fee_payer_str)
+            if not fee_payer_indexes:
                 return VerifyResponse(
                     is_valid=False, invalid_reason=ERR_FEE_PAYER_MISSING, payer=payer
                 )
 
-            # Validate fee payer transaction
-            fee_payer_txn = decoded_txns[fee_payer_index]
-            fee_payer_error = validate_fee_payer_transaction(fee_payer_txn, fee_payer_str)
-            if fee_payer_error:
-                return VerifyResponse(is_valid=False, invalid_reason=fee_payer_error, payer=payer)
+        # Per spec, every transaction whose sender is the facilitator must be a
+        # zero-amount "pay" with no close/rekey and a reasonable fee.
+        for txn_info in decoded_txns:
+            if txn_info.sender in signer_addresses:
+                fee_payer_error = validate_fee_payer_transaction(txn_info, txn_info.sender)
+                if fee_payer_error:
+                    return VerifyResponse(
+                        is_valid=False, invalid_reason=fee_payer_error, payer=payer
+                    )
 
-        # Step 9: Sign fee payer transaction and simulate
+        # Step 9: Sign fee payer transaction(s) and simulate
         try:
-            # Prepare group bytes
+            group_bytes = [base64.b64decode(b64_txn) for b64_txn in payment_group]
+        except (binascii.Error, ValueError) as e:  # pragma: no cover - decoded in step 3
+            return VerifyResponse(
+                is_valid=False,
+                invalid_reason=ERR_SIMULATION_FAILED,
+                invalid_message=f"Failed to decode payment_group base64: {e}",
+                payer=payer,
+            )
+
+        if fee_payer_indexes:
             try:
-                group_bytes = [base64.b64decode(b64_txn) for b64_txn in payment_group]
-            except Exception as e:
+                group_bytes = self._signer.sign_group(
+                    group_bytes, fee_payer_str, fee_payer_indexes, caip2_network
+                )
+            except Exception as e:  # signer is user-supplied; report, do not raise
+                logger.warning("fee payer signing failed: %s", e, exc_info=True)
                 return VerifyResponse(
                     is_valid=False,
                     invalid_reason=ERR_SIMULATION_FAILED,
-                    invalid_message=f"Failed to decode payment_group base64: {e}",
+                    invalid_message=f"Failed to sign fee payer transaction: {e}",
                     payer=payer,
                 )
 
-            # Sign fee payer transaction if present
-            if fee_payer_str and fee_payer_index is not None:
-                try:
-                    group_bytes = self._signer.sign_group(
-                        group_bytes, fee_payer_str, [fee_payer_index], caip2_network
-                    )
-                except Exception as e:
-                    return VerifyResponse(
-                        is_valid=False,
-                        invalid_reason=ERR_SIMULATION_FAILED,
-                        invalid_message=f"Failed to sign fee payer transaction: {e}",
-                        payer=payer,
-                    )
-
-            # Simulate to verify transaction would succeed
+        try:
             self._signer.simulate_group(group_bytes, caip2_network)
-
-        except Exception as e:
+        except Exception as e:  # signer is user-supplied; report, do not raise
+            logger.info("payment group simulation failed: %s", e)
             return VerifyResponse(
                 is_valid=False,
                 invalid_reason=ERR_SIMULATION_FAILED,
@@ -398,38 +405,27 @@ class ExactAvmScheme:
                 transaction="",
             )
 
-        txid = ""
+        payment_group = avm_payload.payment_group
+        # Per spec, the settlement response carries the ID of paymentGroup[paymentIndex].
+        txid = _payment_txid(payment_group[avm_payload.payment_index])
         try:
-            # Prepare group bytes
-            group_bytes = [base64.b64decode(b64_txn) for b64_txn in avm_payload.payment_group]
+            group_bytes = [base64.b64decode(b64_txn) for b64_txn in payment_group]
 
-            # Sign fee payer transaction if present
+            # Sign fee payer transaction(s) if present
             extra = requirements.extra or {}
             fee_payer_str = extra.get("feePayer")
-
             if fee_payer_str:
-                # Find fee payer index
-                decoded_txns: list[DecodedTransactionInfo] = []
-                for b64_txn in avm_payload.payment_group:
-                    txn_info = decode_base64_transaction(b64_txn)
-                    decoded_txns.append(txn_info)
-
-                fee_payer_index: int | None = None
-                for i, txn_info in enumerate(decoded_txns):
-                    if txn_info.sender == fee_payer_str:
-                        fee_payer_index = i
-                        break
-
-                if fee_payer_index is not None:
+                decoded_txns = [decode_base64_transaction(b64_txn) for b64_txn in payment_group]
+                fee_payer_indexes = _indexes_sent_by(decoded_txns, fee_payer_str)
+                if fee_payer_indexes:
                     group_bytes = self._signer.sign_group(
-                        group_bytes, fee_payer_str, [fee_payer_index], caip2_network
+                        group_bytes, fee_payer_str, fee_payer_indexes, caip2_network
                     )
 
-            # Send transaction group to network
-            txid = self._signer.send_group(group_bytes, caip2_network)
-
-            # Wait for confirmation (instant finality)
-            self._signer.confirm_transaction(txid, caip2_network)
+            # Send transaction group to network; wait for it to be in a block
+            # (Algorand has instant finality).
+            sent_txid = self._signer.send_group(group_bytes, caip2_network)
+            self._signer.confirm_transaction(sent_txid or txid, caip2_network)
 
             return SettleResponse(
                 success=True,
@@ -438,7 +434,8 @@ class ExactAvmScheme:
                 payer=verify_result.payer,
             )
 
-        except Exception as e:
+        except Exception as e:  # signer/algod failures become a protocol error result
+            logger.warning("settlement failed for %s: %s", txid, e, exc_info=True)
             return SettleResponse(
                 success=False,
                 error_reason=ERR_TRANSACTION_FAILED,
@@ -447,3 +444,8 @@ class ExactAvmScheme:
                 network=network,
                 payer=verify_result.payer or "",
             )
+
+
+def _indexes_sent_by(decoded_txns: list[DecodedTransactionInfo], address: str) -> list[int]:
+    """Indexes of the transactions in a group whose sender is ``address``."""
+    return [i for i, txn_info in enumerate(decoded_txns) if txn_info.sender == address]

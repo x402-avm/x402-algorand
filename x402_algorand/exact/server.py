@@ -1,5 +1,5 @@
 # Copyright 2024 Coinbase; 2026 x402 Foundation; GoPlausible (x402-avm). Licensed under the Apache License 2.0.
-# Modified in 2026 by the AI Economy Team for x402-algorand.
+# Modified in 2026 by x402-avm contributors for x402-algorand.
 # Changes are listed in the NOTICE file.
 """AVM server implementation for the Exact payment scheme (V2).
 
@@ -8,12 +8,14 @@ Parses prices and enhances payment requirements with AVM-specific data.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
 from x402.schemas import AssetAmount, Network, PaymentRequirements, Price, SupportedKind
 
 from x402_algorand.constants import DEFAULT_DECIMALS, SCHEME_EXACT
+from x402_algorand.errors import NetworkError
 from x402_algorand.utils import (
     get_network_config,
     get_usdc_asa_id,
@@ -21,6 +23,8 @@ from x402_algorand.utils import (
     parse_money_to_decimal,
     to_atomic_amount,
 )
+
+logger = logging.getLogger("x402_algorand")
 
 # Type alias for money parser
 MoneyParser = Callable[[float, str], AssetAmount | None]
@@ -168,8 +172,10 @@ class ExactAvmScheme:
                 requirements.extra["genesisHash"] = config["genesis_hash"]
             if "genesisId" not in requirements.extra:
                 requirements.extra["genesisId"] = config["genesis_id"]
-        except ValueError:
-            pass  # Network not found, skip genesis info
+        except NetworkError:
+            # Unregistered network (e.g. LocalNet without register_network): the
+            # genesis fields are optional hints, so leave them out.
+            logger.debug("no network config for %s; genesis info not added", requirements.network)
 
         return requirements
 

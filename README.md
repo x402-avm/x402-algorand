@@ -6,7 +6,9 @@
 
 Algorand (AVM) exact payment scheme plugin for the official x402 Python SDK.
 
-`x402-algorand` provides Algorand Virtual Machine (AVM) payment scheme support for the official [x402](https://github.com/x402-foundation/x402) payment protocol. It supports native ALGO payments, Algorand Standard Asset (ASA) transfers such as USDC, atomic transaction groups with fee pooling, and integration with `x402Client` spend controls.
+This project is not affiliated with GoPlausible's `x402-avm` packages. It started as a fork of GoPlausible/x402-avm 2.0.2 (see [NOTICE](NOTICE)).
+
+`x402-algorand` provides Algorand Virtual Machine (AVM) payment scheme support for the official [x402](https://github.com/x402-foundation/x402) payment protocol, implementing the [exact scheme on Algorand](https://github.com/x402-foundation/x402/blob/main/specs/schemes/exact/scheme_exact_algo.md) specification. It supports Algorand Standard Asset (ASA) transfers such as USDC, native ALGO payments, atomic transaction groups with fee pooling, and integration with `x402Client` spend controls.
 
 ## Requirements
 
@@ -24,32 +26,136 @@ Installing `x402-algorand` automatically pulls the official `x402` package.
 
 ## Quickstart
 
-Register the Algorand exact payment scheme with the official `x402Client`, `x402ResourceServer`, and `x402Facilitator`:
+Register the Algorand exact scheme with the official `x402Client`, `x402ResourceServer`
+and `x402Facilitator`. `PayerAvmSigner` and `ServerAvmSigner` are ready-made signers
+backed by an Algorand private key or 25-word mnemonic.
+
+### Paid API (FastAPI, in-process facilitator, AlgoKit LocalNet)
+
+The server's account is both the payee and the fee payer, so the buyer pays exactly the price
+with no network fee.
 
 ```python
-from x402 import x402Client, x402ResourceServer, x402Facilitator
-from x402_algorand.exact.register import (
-    register_exact_avm_client,
-    register_exact_avm_server,
-    register_exact_avm_facilitator,
-)
+import os
 
-# 1. Client setup
-client = x402Client()
-register_exact_avm_client(client, client_signer)
+from algosdk.v2client.algod import AlgodClient
+from fastapi import FastAPI
+from x402 import x402Facilitator, x402ResourceServer
+from x402.http.middleware.fastapi import payment_middleware
 
-# 2. Server setup
-server = x402ResourceServer(facilitator_client)
+from x402_algorand import ServerAvmSigner, caip2_from_genesis_hash
+from x402_algorand.exact import register_exact_avm_facilitator, register_exact_avm_server
+
+algod = AlgodClient("a" * 64, "http://localhost:4001")  # AlgoKit LocalNet
+network = caip2_from_genesis_hash(algod.suggested_params().gh)
+signer = ServerAvmSigner.from_mnemonic(os.environ["SERVER_MNEMONIC"], algod)
+
+facilitator = x402Facilitator()
+register_exact_avm_facilitator(facilitator, signer, network)
+server = x402ResourceServer(facilitator)
 register_exact_avm_server(server)
 
-# 3. Facilitator setup
-facilitator = x402Facilitator()
-register_exact_avm_facilitator(
-    facilitator,
-    facilitator_signer,
-    networks="algorand:wGHE2Pwdvd7S12BL5FaOP20EGYesN73k",
-)
+app = FastAPI()
+routes = {
+    "GET /weather": {
+        "accepts": [
+            {
+                "scheme": "exact",
+                "price": {"amount": "10000", "asset": "0"},  # 0.01 ALGO
+                "network": network,
+                "pay_to": signer.address,
+            }
+        ]
+    }
+}
+app.middleware("http")(payment_middleware(routes, server))
+
+
+@app.get("/weather")
+async def weather():
+    return {"city": "Boston", "temperature": 68}
 ```
+
+### Paying client (httpx)
+
+```python
+import asyncio
+import os
+
+from x402 import x402Client
+from x402.http.clients.httpx import wrapHttpxWithPayment
+
+from x402_algorand import PayerAvmSigner
+from x402_algorand.exact import register_exact_avm_client
+
+
+async def main() -> None:
+    client = x402Client()
+    register_exact_avm_client(
+        client,
+        PayerAvmSigner.from_mnemonic(os.environ["PAYER_MNEMONIC"]),
+        algod_url="http://localhost:4001",
+        algod_token="a" * 64,
+    )
+    async with wrapHttpxWithPayment(client) as http:
+        response = await http.get("http://127.0.0.1:8000/weather")
+        print(response.status_code, response.json())
+
+
+asyncio.run(main())
+```
+
+On MainNet and TestNet, omit `algod_url` / the `AlgodClient` argument to use the public
+AlgoNode endpoints configured in `NETWORK_CONFIGS` (overridable with the `ALGOD_MAINNET_URL`
+and `ALGOD_TESTNET_URL` environment variables), and use the network constants
+`ALGORAND_MAINNET_CAIP2` / `ALGORAND_TESTNET_CAIP2`.
+
+## Signers
+
+| Class | Role | Constructors |
+|---|---|---|
+| `PayerAvmSigner` | `ClientAvmSigner`: signs the buyer's payment transaction | `from_private_key(key)`, `from_mnemonic(words)` |
+| `ServerAvmSigner` | `FacilitatorAvmSigner`: signs fee payer transactions, simulates, sends and confirms groups. Also implements `ClientAvmSigner`. | `from_private_key(key, algod_client=None, *, algod_url=None, algod_token=None)`, `from_mnemonic(...)`, or `ServerAvmSigner([key1, key2], ...)` for several fee payers |
+
+- Keys are kept in private attributes and are not included in `repr()`, exception messages or logs.
+- `ServerAvmSigner` with an algod client checks, on first use for a network, that the node's
+  genesis hash matches that network and raises `NetworkMismatchError` otherwise. Without one, it
+  uses the algod URL configured for the network.
+- To use a KMS, HSM or wallet instead, implement the `ClientAvmSigner` / `FacilitatorAvmSigner`
+  protocols from `x402_algorand.signer`.
+
+## Errors
+
+Exceptions raised by the package derive from `X402AlgorandError`. Each also derives from the
+built-in type raised before 0.3.0, so existing `except ValueError` handlers keep working.
+
+| Exception | Also a | Raised when |
+|---|---|---|
+| `NetworkError` | `ValueError` | A network id is malformed, unsupported, or not registered |
+| `NetworkMismatchError` | `NetworkError` | algod is connected to a different network than requested |
+| `TransactionDecodeError` | `ValueError` | Bytes or base64 are not a decodable Algorand transaction |
+| `SigningError` | `ValueError` | Bad key or mnemonic, or an address the signer does not manage |
+| `SimulationError` | `RuntimeError` | algod `simulate` reports that the group would fail |
+
+Payment verification never raises for an invalid payment: `verify()` and `settle()` return a
+`VerifyResponse` / `SettleResponse` with a protocol `invalid_reason` / `error_reason` code (see
+`x402_algorand.constants`, `ERR_*`). The package logs to the `x402_algorand` logger.
+
+## Specification conformance
+
+The facilitator follows the verification steps of the
+[exact scheme on Algorand](https://github.com/x402-foundation/x402/blob/main/specs/schemes/exact/scheme_exact_algo.md):
+
+- `paymentGroup` has at most 16 transactions; all decode; all share one group id and the genesis hash of the requested network.
+- `paymentGroup[paymentIndex]` pays exactly `amount` of `asset` to `payTo`, and is authorized by an ed25519 signature (of the sender or its auth address), a k-of-n multisig, or a logic signature.
+- Every transaction sent by a facilitator address is a zero-amount `pay` to itself with no `close`/`rekey` and a fee of at most 16,000 microAlgos; the advertised `feePayer`'s transactions are signed only after these checks.
+- The group is simulated before it is accepted, and settlement returns the ID of `paymentGroup[paymentIndex]`.
+
+Additional checks in this package: close-to fields and `keyreg` transactions are rejected in any
+transaction, and rekeys are only accepted as a balanced pair that returns authority to the sender.
+
+`asset: "0"` (native ALGO via a `pay` transaction) is an extension of this package; the
+specification defines ASA transfers only.
 
 ## Network Identifiers (CAIP-2)
 
@@ -135,8 +241,8 @@ pip install -e ".[dev]"
 Run test tiers:
 
 ```bash
-# 1. Offline tests (unit tests, mock tests, CAIP-2 verification)
-pytest
+# 1. Offline tests (unit tests, mock tests, CAIP-2 verification), with coverage
+pytest --cov
 
 # 2. LocalNet tests (requires running AlgoKit LocalNet: algokit localnet start)
 LOCALNET=1 pytest
@@ -158,6 +264,9 @@ Build distribution packages:
 python -m build
 twine check dist/*
 ```
+
+Releases are published to PyPI by the maintainers. `.github/workflows/release.yml` is prepared
+for PyPI trusted publishing and only runs when started manually.
 
 ## License
 

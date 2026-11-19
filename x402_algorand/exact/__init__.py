@@ -1,5 +1,5 @@
 # Copyright 2024 Coinbase; 2026 x402 Foundation; GoPlausible (x402-avm). Licensed under the Apache License 2.0.
-# Modified in 2026 by the AI Economy Team for x402-algorand.
+# Modified in 2026 by x402-avm contributors for x402-algorand.
 # Changes are listed in the NOTICE file.
 """Exact payment scheme for AVM (Algorand).
 
@@ -8,24 +8,18 @@ for the exact payment scheme on Algorand networks.
 
 Usage:
     ```python
-    from x402_algorand.exact import (
-        ExactAvmScheme,
-        register_exact_avm_client,
-        register_exact_avm_facilitator,
-    )
+    from x402 import x402Client, x402Facilitator
 
-    # Client-side: implement ClientAvmSigner protocol with algosdk
-    import base64, algosdk
-    secret_key = base64.b64decode(os.environ["AVM_PRIVATE_KEY"])
-    address = algosdk.encoding.encode_address(secret_key[32:])
-    # ... implement sign_transactions method (see examples)
+    from x402_algorand import ALGORAND_TESTNET_CAIP2, PayerAvmSigner, ServerAvmSigner
+    from x402_algorand.exact import register_exact_avm_client, register_exact_avm_facilitator
+
     client = x402Client()
-    register_exact_avm_client(client, signer)
+    register_exact_avm_client(client, PayerAvmSigner.from_mnemonic(payer_words))
 
-    # Facilitator-side: implement FacilitatorAvmSigner protocol with algosdk
-    # ... implement get_addresses, sign_transaction, simulate_group, etc. (see examples)
     facilitator = x402Facilitator()
-    register_exact_avm_facilitator(facilitator, fac_signer, networks)
+    register_exact_avm_facilitator(
+        facilitator, ServerAvmSigner.from_mnemonic(server_words), ALGORAND_TESTNET_CAIP2
+    )
     ```
 """
 

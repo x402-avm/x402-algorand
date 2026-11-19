@@ -7,6 +7,7 @@ import types
 
 import pytest
 from algosdk import account, encoding, kmd, transaction
+from algosdk.atomic_transaction_composer import AccountTransactionSigner
 from algosdk.v2client import algod
 from algosdk.v2client.models import SimulateRequest, SimulateRequestTransactionGroup
 
@@ -77,7 +78,8 @@ class DefaultAvmSigner:
 
     def _sign_raw(self, txn_bytes):
         txn = self._decode(txn_bytes)
-        return base64.b64decode(encoding.msgpack_encode(txn.sign(self.private_key)))
+        stxn = AccountTransactionSigner(self.private_key).sign_transactions([txn], [0])[0]
+        return base64.b64decode(encoding.msgpack_encode(stxn))
 
 
 # Register dummy ai_economy_sdk in sys.modules for any backward compatibility
@@ -117,7 +119,7 @@ def new_funded_account(
     d_addr, d_sk = get_dispenser(algod_c)
     sp = algod_c.suggested_params()
     txn = transaction.PaymentTxn(d_addr, sp, addr, int(algos * 1_000_000))
-    stxn = txn.sign(d_sk)
+    stxn = AccountTransactionSigner(d_sk).sign_transactions([txn], [0])[0]
     txid = algod_c.send_transaction(stxn)
     transaction.wait_for_confirmation(algod_c, txid, 4)
     return sk, addr

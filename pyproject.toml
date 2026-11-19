@@ -1,12 +1,12 @@
 [build-system]
-requires = ["setuptools>=77.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
 
 [project]
 name = "x402-algorand"
-version = "0.2.1"
+version = "0.3.0"
 authors = [
-  { name = "AI Economy Team", email = "team@aieconomy.com" },
+  { name = "x402-avm contributors" },
 ]
 description = "Algorand (AVM) exact payment scheme for the official x402 Python SDK."
 readme = "README.md"
@@ -22,18 +22,21 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
     "Operating System :: OS Independent",
 ]
 dependencies = [
     "x402>=2.28,<3",
     "py-algorand-sdk>=2.6",
+    "pynacl>=1.4",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
     "ruff>=0.8",
     "build>=1.2",
     "twine>=5.0",
@@ -42,13 +45,37 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/x402-avm/x402-algorand"
+Repository = "https://github.com/x402-avm/x402-algorand"
 Documentation = "https://x402-avm.github.io"
 Issues = "https://github.com/x402-avm/x402-algorand/issues"
 Changelog = "https://github.com/x402-avm/x402-algorand/blob/main/CHANGELOG.md"
 
-[tool.setuptools.packages.find]
-include = ["x402_algorand*"]
+[tool.hatch.build.targets.wheel]
+packages = ["x402_algorand"]
+exclude = ["x402_algorand/README.md"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/x402_algorand",
+  "/tests",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/LICENSE",
+  "/NOTICE",
+  "/pyproject.toml",
+]
+exclude = ["__pycache__", "*.pyc", "/x402_algorand/README.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error::DeprecationWarning"]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["x402_algorand"]
+branch = false
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

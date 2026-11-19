@@ -1,15 +1,26 @@
 # Copyright 2024 Coinbase; 2026 x402 Foundation; GoPlausible (x402-avm). Licensed under the Apache License 2.0.
-# Modified in 2026 by the AI Economy Team for x402-algorand.
+# Modified in 2026 by x402-avm contributors for x402-algorand.
 # Changes are listed in the NOTICE file.
 """V1 facilitator implementation for AVM exact payment scheme.
 
 Provides backward compatibility for V1 protocol by wrapping the V2 implementation.
 Maps V1 network names (algorand-mainnet, algorand-testnet) to V2 CAIP-2 identifiers.
+
+``verify`` and ``settle`` accept either the official SDK's V1 models
+(``PaymentPayloadV1`` / ``PaymentRequirementsV1``, as passed by ``x402Facilitator``),
+returning ``VerifyResponse`` / ``SettleResponse``, or plain camelCase dicts, returning
+the V1 camelCase response dicts.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+
+from x402.schemas import (
+    PaymentPayload,
+    PaymentRequirements,
+    SettleResponse,
+)
 
 from x402_algorand.constants import V1_TO_V2_NETWORK_MAP, V2_TO_V1_NETWORK_MAP
 
@@ -70,63 +81,25 @@ class ExactAvmSchemeV1:
 
     def verify(
         self,
-        payload: dict[str, Any],
-        payment_requirements: dict[str, Any],
-    ) -> dict[str, Any]:
+        payload: Any,
+        payment_requirements: Any,
+        context: Any = None,
+    ) -> Any:
         """Verify payment payload for V1 protocol.
 
         Args:
-            payload: V1 payment payload dict.
-            payment_requirements: V1 payment requirements dict.
+            payload: ``PaymentPayloadV1`` or V1 payload dict.
+            payment_requirements: ``PaymentRequirementsV1`` or V1 requirements dict.
+            context: Facilitator context (unused).
 
         Returns:
-            V1 verify response dict.
+            ``VerifyResponse`` for model input; V1 verify response dict for dict input.
         """
-        # Import types for conversion
-        from x402.schemas import PaymentPayload, PaymentRequirements
-
-        # Convert V1 to V2 network
-        v1_network = payment_requirements.get("network", "")
-        v2_network = V1_TO_V2_NETWORK_MAP.get(v1_network, v1_network)
-
-        # Build V2 requirements
-        v2_requirements = PaymentRequirements(
-            scheme=payment_requirements.get("scheme", "exact"),
-            network=v2_network,
-            amount=str(payment_requirements.get("maxAmountRequired", "0")),
-            pay_to=payment_requirements.get("payTo", ""),
-            asset=payment_requirements.get("asset", ""),
-            max_timeout_seconds=payment_requirements.get("maxTimeoutSeconds"),
-            extra=payment_requirements.get("extra"),
-        )
-
-        # Build V2 accepted requirements
-        v2_accepted = PaymentRequirements(
-            scheme=payload.get("scheme", "exact"),
-            network=v2_network,
-            amount=str(payload.get("maxAmountRequired", "0")),
-            pay_to=payload.get("payTo", ""),
-            asset=payload.get("asset", ""),
-            max_timeout_seconds=payload.get("maxTimeoutSeconds"),
-            extra=payload.get("extra"),
-        )
-
-        # Build V2 payload
-        v2_payload = PaymentPayload(
-            x402_version=1,
-            scheme=payload.get("scheme", "exact"),
-            network=v2_network,
-            payload=payload.get("payload", {}),
-            accepted=v2_accepted,
-            resource=payload.get("resource"),
-            extensions={},
-            output_schema=None,
-        )
-
-        # Call V2 verify
+        _ = context
+        v2_payload, v2_requirements = _to_v2(payload, payment_requirements)
         result = self._v2_scheme.verify(v2_payload, v2_requirements)
-
-        # Convert response to V1 format
+        if not isinstance(payload, dict):
+            return result
         return {
             "isValid": result.is_valid,
             "invalidReason": result.invalid_reason,
@@ -135,68 +108,34 @@ class ExactAvmSchemeV1:
 
     def settle(
         self,
-        payload: dict[str, Any],
-        payment_requirements: dict[str, Any],
-    ) -> dict[str, Any]:
+        payload: Any,
+        payment_requirements: Any,
+        context: Any = None,
+    ) -> Any:
         """Settle payment for V1 protocol.
 
         Args:
-            payload: V1 payment payload dict.
-            payment_requirements: V1 payment requirements dict.
+            payload: ``PaymentPayloadV1`` or V1 payload dict.
+            payment_requirements: ``PaymentRequirementsV1`` or V1 requirements dict.
+            context: Facilitator context (unused).
 
         Returns:
-            V1 settle response dict.
+            ``SettleResponse`` for model input; V1 settle response dict for dict input.
+            The network is reported with its V1 name.
         """
-        # Import types for conversion
-        from x402.schemas import PaymentPayload, PaymentRequirements
-
-        # Convert V1 to V2 network
-        v1_network = payment_requirements.get("network", "")
-        v2_network = V1_TO_V2_NETWORK_MAP.get(v1_network, v1_network)
-
-        # Build V2 requirements
-        v2_requirements = PaymentRequirements(
-            scheme=payment_requirements.get("scheme", "exact"),
-            network=v2_network,
-            amount=str(payment_requirements.get("maxAmountRequired", "0")),
-            pay_to=payment_requirements.get("payTo", ""),
-            asset=payment_requirements.get("asset", ""),
-            max_timeout_seconds=payment_requirements.get("maxTimeoutSeconds"),
-            extra=payment_requirements.get("extra"),
-        )
-
-        # Build V2 accepted requirements
-        v2_accepted = PaymentRequirements(
-            scheme=payload.get("scheme", "exact"),
-            network=v2_network,
-            amount=str(payload.get("maxAmountRequired", "0")),
-            pay_to=payload.get("payTo", ""),
-            asset=payload.get("asset", ""),
-            max_timeout_seconds=payload.get("maxTimeoutSeconds"),
-            extra=payload.get("extra"),
-        )
-
-        # Build V2 payload
-        v2_payload = PaymentPayload(
-            x402_version=1,
-            scheme=payload.get("scheme", "exact"),
-            network=v2_network,
-            payload=payload.get("payload", {}),
-            accepted=v2_accepted,
-            resource=payload.get("resource"),
-            extensions={},
-            output_schema=None,
-        )
-
-        # Call V2 settle
+        _ = context
+        v2_payload, v2_requirements = _to_v2(payload, payment_requirements)
         result = self._v2_scheme.settle(v2_payload, v2_requirements)
-
-        # Convert network back to V1 if needed
-        response_network = result.network
-        if response_network in V2_TO_V1_NETWORK_MAP:
-            response_network = V2_TO_V1_NETWORK_MAP[response_network]
-
-        # Convert response to V1 format
+        response_network = V2_TO_V1_NETWORK_MAP.get(str(result.network), str(result.network))
+        if not isinstance(payload, dict):
+            return SettleResponse(
+                success=result.success,
+                error_reason=result.error_reason,
+                error_message=result.error_message,
+                transaction=result.transaction,
+                network=response_network,
+                payer=result.payer,
+            )
         return {
             "success": result.success,
             "errorReason": result.error_reason,
@@ -204,3 +143,40 @@ class ExactAvmSchemeV1:
             "network": response_network,
             "payer": result.payer,
         }
+
+
+def _as_dict(obj: Any) -> dict[str, Any]:
+    """V1 model or dict -> camelCase dict."""
+    if isinstance(obj, dict):
+        return obj
+    return obj.model_dump(by_alias=True)
+
+
+def _to_v2(payload: Any, payment_requirements: Any) -> tuple[PaymentPayload, PaymentRequirements]:
+    """Convert V1 payload/requirements (models or dicts) to V2 models."""
+    p = _as_dict(payload)
+    r = _as_dict(payment_requirements)
+
+    def v2_net(name: str) -> str:
+        return V1_TO_V2_NETWORK_MAP.get(name, name)
+
+    common = {
+        "amount": str(r.get("maxAmountRequired", "0")),
+        "pay_to": r.get("payTo", ""),
+        "asset": r.get("asset", ""),
+        "max_timeout_seconds": r.get("maxTimeoutSeconds") or 0,
+        "extra": r.get("extra") or {},
+    }
+    v2_requirements = PaymentRequirements(
+        scheme=r.get("scheme", "exact"), network=v2_net(r.get("network", "")), **common
+    )
+    # V1 payloads carry scheme/network at the top level; they become "accepted".
+    v2_accepted = PaymentRequirements(
+        scheme=p.get("scheme", "exact"), network=v2_net(p.get("network", "")), **common
+    )
+    v2_payload = PaymentPayload(
+        x402_version=1,
+        payload=p.get("payload", {}),
+        accepted=v2_accepted,
+    )
+    return v2_payload, v2_requirements

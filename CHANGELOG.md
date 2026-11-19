@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-19
+
+### Added
+- Ready-made signers: `PayerAvmSigner` (client side) and `ServerAvmSigner` (facilitator side:
+  fee payer signing, simulate, send, confirm; also usable as a client signer). Both can be built
+  with `from_private_key(...)` or `from_mnemonic(...)`; `ServerAvmSigner` accepts several keys,
+  an `algod_client` or `algod_url`/`algod_token`, and checks that algod is on the requested network.
+  Keys are never included in `repr()`, error messages or logs.
+- Exception hierarchy in `x402_algorand.errors`, exported from `x402_algorand`:
+  `X402AlgorandError`, `NetworkError`, `NetworkMismatchError`, `TransactionDecodeError`,
+  `SigningError`, `SimulationError`.
+- `x402_algorand.__version__`.
+- `py.typed` marker, so type checkers use the package's inline type hints.
+- Payments authorized by a k-of-n multisig, a logic signature, or the auth address of a rekeyed
+  account are accepted, as allowed by the exact scheme specification.
+- Python 3.14 support.
+
+### Changed
+- Errors raised for unsupported or unregistered networks are now `NetworkError`, for an algod on
+  the wrong network `NetworkMismatchError`, and for undecodable transactions
+  `TransactionDecodeError`. All are subclasses of `ValueError`, as before.
+- The facilitator checks every transaction sent by one of its own addresses (not only the first),
+  and signs all of the advertised `feePayer`'s transactions, as the specification requires.
+- Fee payer signing, simulation and settlement failures are also logged to the
+  `x402_algorand` logger; the returned `invalid_reason` / `error_reason` codes are unchanged.
+- Package metadata: authors are "x402-avm contributors"; added a `Repository` URL; `pynacl` is
+  a declared dependency (it was already required through `py-algorand-sdk`).
+
+### Fixed
+- `settle()` returns the ID of `paymentGroup[paymentIndex]` as the transaction, as required by the
+  specification. With a fee payer it previously returned the ID of the fee payer transaction.
+- The V1 facilitator and client wrappers now accept the official SDK's `PaymentPayloadV1` /
+  `PaymentRequirementsV1` models and return `VerifyResponse` / `SettleResponse`, so V1 payments
+  routed through `x402Facilitator` / `x402Client` work. Requirements without `extra` no longer fail
+  validation. Plain dict input still returns the V1 dict responses.
+- Ed25519 signature verification of a payment from a rekeyed account uses the auth address.
+- A rekey pair is only accepted when the second rekey returns authority to the sender.
+
 ## [0.2.1] - 2026-11-19
 
 ### Added

@@ -26,8 +26,8 @@ uv pip install -e ".[dev]"
 Tests are structured into three distinct tiers:
 
 ```bash
-# 1. Offline tests (default, fast, no external network needed):
-pytest
+# 1. Offline tests (default, fast, no external network needed), with coverage gate:
+pytest --cov --cov-fail-under=99
 
 # 2. LocalNet tests (requires AlgoKit LocalNet running on localhost:4001/4002):
 LOCALNET=1 pytest
@@ -61,11 +61,14 @@ ruff check --fix .
 ├── .github/
 │   ├── dependabot.yml          # Weekly dependency update configuration
 │   └── workflows/
-│       └── ci.yml              # Multi-tier GitHub Actions workflow
+│       ├── ci.yml              # Multi-tier GitHub Actions workflow
+│       └── release.yml         # PyPI trusted publishing (manual trigger only, disabled)
 ├── x402_algorand/              # Main package source
 │   ├── __init__.py             # Public exports
 │   ├── constants.py            # CAIP-2 IDs, ASA IDs, error codes, DEFAULT_ASSETS
-│   ├── signer.py               # Signer protocols (ClientAvmSigner, FacilitatorAvmSigner)
+│   ├── errors.py               # Exception hierarchy (X402AlgorandError and subclasses)
+│   ├── py.typed                # PEP 561 marker
+│   ├── signer.py               # Signer protocols + PayerAvmSigner / ServerAvmSigner
 │   ├── types.py                # Payload dataclasses and group info types
 │   ├── utils.py                # Network normalization, transaction encoding/decoding
 │   └── exact/                  # Scheme implementation
@@ -77,8 +80,13 @@ ruff check --fix .
 │       └── v1/                 # V1 backwards compatibility wrappers
 ├── tests/                      # Self-contained pytest test suite
 │   ├── conftest.py             # DefaultAvmSigner, LocalNet KMD dispenser, tier filters
+│   ├── avm_builders.py         # Offline transaction / payload builders for unit tests
 │   ├── test_avm_fork.py        # Offline unit tests for AVM exact scheme
 │   ├── test_caip2.py           # Offline unit tests for CAIP-2 specification vectors
+│   ├── test_facilitator.py     # Table-driven verify/settle tests (every invalid_reason)
+│   ├── test_server_v1_register.py # Server scheme, V1 wrappers, register helpers, SDK round trip
+│   ├── test_signers.py         # PayerAvmSigner / ServerAvmSigner
+│   ├── test_utils_client.py    # Utilities, client scheme, exceptions, __version__
 │   ├── test_localnet_algo_payment.py # Live payment verification & settlement on LocalNet
 │   ├── test_public_networks.py # Read-only simulate tests on MainNet and TestNet
 │   └── test_spend_controls.py  # Spend controls filtering, caps, and ASA whitelisting
@@ -106,14 +114,16 @@ ruff check --fix .
    - Default atomic cap is 1,000,000 units ($1).
    - Other ASAs must be explicitly allowed using `client.set_spend_controls({"allowed_assets": [...]})`.
 4. **No Secrets**: Never commit real private keys, mnemonics, or tokens.
-5. **Licensing**: This package is licensed under Apache-2.0. Upstream notices in `LICENSE` and `NOTICE` must remain intact.
+5. **Errors**: Raise subclasses of `X402AlgorandError` (see `errors.py`) that also inherit the built-in type callers already catch. Never raise from `verify()`/`settle()` for an invalid payment; return a protocol `ERR_*` code. Log via `logging.getLogger("x402_algorand")`; never log keys or mnemonics.
+6. **No deprecated algosdk APIs**: tests run with `DeprecationWarning` as an error. Sign with `AccountTransactionSigner`, not `Transaction.sign()`.
+7. **Licensing**: This package is licensed under Apache-2.0. Upstream notices in `LICENSE` and `NOTICE` must remain intact.
 
 ## Pull Request Checklist
 
 Before submitting a PR, verify:
 - [ ] `ruff check .` reports no errors.
 - [ ] `ruff format --check .` reports no errors.
-- [ ] `pytest` passes all offline unit tests.
+- [ ] `pytest --cov --cov-fail-under=99` passes all offline unit tests.
 - [ ] `LOCALNET=1 pytest` passes all live LocalNet tests.
 - [ ] `PUBLIC_NETS=1 pytest` passes public network simulations.
 - [ ] `python -m build && twine check dist/*` succeeds without packaging errors.

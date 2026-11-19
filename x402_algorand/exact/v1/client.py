@@ -1,5 +1,5 @@
 # Copyright 2024 Coinbase; 2026 x402 Foundation; GoPlausible (x402-avm). Licensed under the Apache License 2.0.
-# Modified in 2026 by the AI Economy Team for x402-algorand: algod token parameter.
+# Modified in 2026 by x402-avm contributors for x402-algorand: algod token parameter.
 # Changes are listed in the NOTICE file.
 """V1 client implementation for AVM exact payment scheme.
 
@@ -48,7 +48,7 @@ class ExactAvmSchemeV1:
 
     def create_payment_payload(
         self,
-        payment_requirements: dict[str, Any],
+        payment_requirements: Any,
     ) -> dict[str, Any]:
         """Create payment payload for V1 protocol.
 
@@ -56,7 +56,8 @@ class ExactAvmSchemeV1:
         and returns V1-compatible response.
 
         Args:
-            payment_requirements: V1 payment requirements dict with:
+            payment_requirements: ``PaymentRequirementsV1`` (as passed by ``x402Client``)
+                or a V1 payment requirements dict with:
                 - scheme: str
                 - network: str (V1 network name)
                 - maxAmountRequired: str
@@ -70,6 +71,9 @@ class ExactAvmSchemeV1:
         """
         # Import PaymentRequirements for conversion
         from x402.schemas import PaymentRequirements
+
+        if not isinstance(payment_requirements, dict):
+            payment_requirements = payment_requirements.model_dump(by_alias=True)
 
         # Map V1 network to V2
         v1_network = payment_requirements.get("network", "")
@@ -85,8 +89,8 @@ class ExactAvmSchemeV1:
             amount=str(max_amount),
             pay_to=payment_requirements.get("payTo", ""),
             asset=payment_requirements.get("asset", ""),
-            max_timeout_seconds=payment_requirements.get("maxTimeoutSeconds"),
-            extra=payment_requirements.get("extra"),
+            max_timeout_seconds=payment_requirements.get("maxTimeoutSeconds") or 0,
+            extra=payment_requirements.get("extra") or {},
         )
 
         # Create V2 payload

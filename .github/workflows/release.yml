@@ -1,0 +1,86 @@
+name: Release
+
+# DISABLED: this workflow only runs when started by hand (Actions > Release > Run workflow,
+# choosing a vX.Y.Z tag in "Use workflow from"). Publishing jobs are skipped on branches.
+# Releases are currently published manually by the maintainers.
+#
+# One-time setup before enabling it:
+#   1. On PyPI, open the x402-algorand project > Settings > Publishing and add a
+#      "trusted publisher": owner x402-avm, repository x402-algorand,
+#      workflow release.yml, environment pypi.
+#   2. In this GitHub repository, create an environment named "pypi"
+#      (Settings > Environments), optionally with required reviewers.
+#   3. To publish on version tags, uncomment the "push" trigger below.
+# No API token is stored: PyPI trusts the OIDC identity of this workflow.
+
+on:
+  workflow_dispatch:
+  # push:
+  #   tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Check distributions
+        run: twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/x402-algorand/
+    permissions:
+      id-token: write  # trusted publishing (OIDC) and attestations
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+
+  github-release:
+    name: Create GitHub Release
+    needs: publish-pypi
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --notes "See CHANGELOG.md for details."

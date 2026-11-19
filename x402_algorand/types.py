@@ -1,5 +1,5 @@
 # Copyright 2024 Coinbase; 2026 x402 Foundation; GoPlausible (x402-avm). Licensed under the Apache License 2.0.
-# Modified in 2026 by the AI Economy Team for x402-algorand.
+# Modified in 2026 by x402-avm contributors for x402-algorand.
 # Changes are listed in the NOTICE file.
 """AVM mechanism types - dataclasses for payloads and transaction info."""
 

@@ -1,5 +1,5 @@
 # Copyright 2024 Coinbase; 2026 x402 Foundation; GoPlausible (x402-avm). Licensed under the Apache License 2.0.
-# Modified in 2026 by the AI Economy Team for x402-algorand: native ALGO payments (asset 0); algod token.
+# Modified in 2026 by x402-avm contributors for x402-algorand: native ALGO payments (asset 0); algod token.
 # Changes are listed in the NOTICE file.
 """AVM client implementation for the Exact payment scheme (V2).
 
@@ -11,25 +11,17 @@ from __future__ import annotations
 
 import base64
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-try:
-    from algosdk import encoding, transaction
-    from algosdk.v2client import algod
-except ImportError as e:
-    raise ImportError(
-        "AVM mechanism requires py-algorand-sdk. Install with: pip install x402-avm[avm]"
-    ) from e
-
+from algosdk import encoding, transaction
+from algosdk.v2client import algod
 from x402.schemas import PaymentRequirements
 
 from x402_algorand.constants import DEFAULT_ASSETS, NETWORK_CONFIGS, SCHEME_EXACT
+from x402_algorand.errors import NetworkError, NetworkMismatchError
 from x402_algorand.signer import ClientAvmSigner
 from x402_algorand.types import ExactAvmPayload
 from x402_algorand.utils import caip2_from_genesis_hash, normalize_network
-
-if TYPE_CHECKING:
-    pass
 
 
 class ExactAvmScheme:
@@ -75,7 +67,10 @@ class ExactAvmScheme:
         else:
             config = NETWORK_CONFIGS.get(caip2_network)
             if not config:
-                raise ValueError(f"Unsupported network: {network}")
+                raise NetworkError(
+                    f"Unsupported network: {network}. Pass algod_url for LocalNet "
+                    "or private networks."
+                )
             algod_url = config["algod_url"]
 
         algod_token = self._custom_algod_token if self._custom_algod_token is not None else ""
@@ -106,7 +101,10 @@ class ExactAvmScheme:
             x402Client wraps this with x402_version, accepted, resource, extensions.
 
         Raises:
-            ValueError: If network is unsupported.
+            NetworkError: If the network is unsupported and no ``algod_url`` was given.
+            NetworkMismatchError: If algod is connected to a different network
+                than ``requirements.network``.
+            Both are subclasses of ``ValueError``.
         """
         network = str(requirements.network)
         client = self._get_client(network)
@@ -114,7 +112,7 @@ class ExactAvmScheme:
         # Get suggested params
         sp = client.suggested_params()
         if caip2_from_genesis_hash(sp.gh) != normalize_network(network):
-            raise ValueError(
+            raise NetworkMismatchError(
                 f"algod is on {caip2_from_genesis_hash(sp.gh)} but the payment is for {network}"
             )
 
@@ -271,7 +269,7 @@ def find_default_asset(asset: str, network: str) -> dict[str, Any] | None:
     """
     try:
         norm_net = normalize_network(network)
-    except Exception:
+    except NetworkError:
         return None
 
     asset_str = str(asset)

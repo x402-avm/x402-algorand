@@ -1,5 +1,5 @@
 # Copyright 2024 Coinbase; 2026 x402 Foundation; GoPlausible (x402-avm). Licensed under the Apache License 2.0.
-# Modified in 2026 by the AI Economy Team for x402-algorand.
+# Modified in 2026 by x402-avm contributors for x402-algorand.
 # Changes are listed in the NOTICE file.
 """AVM (Algorand Virtual Machine) mechanism for x402 Python SDK.
 
@@ -23,46 +23,21 @@ Environment Variables:
 
 Usage:
     ```python
-    import base64
-    import algosdk
-    from x402_algorand import (
-        ALGORAND_MAINNET_CAIP2,
-        ClientAvmSigner,
-    )
-    from x402_algorand.exact import ExactAvmScheme
+    import os
 
-    # Implement ClientAvmSigner with algosdk
-    class MyAlgorandSigner:
-        def __init__(self, private_key_b64: str):
-            self._secret_key = base64.b64decode(private_key_b64)
-            self._address = algosdk.encoding.encode_address(self._secret_key[32:])
+    from x402 import x402Client
+    from x402_algorand import PayerAvmSigner
+    from x402_algorand.exact import register_exact_avm_client
 
-        @property
-        def address(self) -> str:
-            return self._address
-
-        def sign_transactions(
-            self,
-            unsigned_txns: list[bytes],
-            indexes_to_sign: list[int],
-        ) -> list[bytes | None]:
-            result = []
-            for i, txn_bytes in enumerate(unsigned_txns):
-                if i in indexes_to_sign:
-                    txn = algosdk.encoding.msgpack_decode(txn_bytes)
-                    signed = txn.sign(self._secret_key)
-                    result.append(algosdk.encoding.msgpack_encode(signed))
-                else:
-                    result.append(None)
-            return result
-
-    signer = MyAlgorandSigner(os.environ["AVM_PRIVATE_KEY"])
+    signer = PayerAvmSigner.from_mnemonic(os.environ["PAYER_MNEMONIC"])
     client = x402Client()
-    client.register("algorand:*", ExactAvmScheme(signer))
+    register_exact_avm_client(client, signer)
     ```
 """
 
-# Constants
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _version
+
 # Submodule exports
 from x402_algorand import exact
 from x402_algorand.constants import (
@@ -81,10 +56,22 @@ from x402_algorand.constants import (
     V1_TO_V2_NETWORK_MAP,
 )
 
-# Signer protocols (implementations provided by integrator using algosdk)
+# Exceptions
+from x402_algorand.errors import (
+    NetworkError,
+    NetworkMismatchError,
+    SigningError,
+    SimulationError,
+    TransactionDecodeError,
+    X402AlgorandError,
+)
+
+# Signer protocols and ready-made implementations
 from x402_algorand.signer import (
     ClientAvmSigner,
     FacilitatorAvmSigner,
+    PayerAvmSigner,
+    ServerAvmSigner,
 )
 
 # Types
@@ -118,7 +105,20 @@ from x402_algorand.utils import (
     validate_no_security_risks,
 )
 
+try:
+    __version__ = _version("x402-algorand")
+except PackageNotFoundError:  # pragma: no cover - running from a source tree
+    __version__ = "0.0.0"
+
 __all__ = [
+    "__version__",
+    # Exceptions
+    "X402AlgorandError",
+    "NetworkError",
+    "NetworkMismatchError",
+    "SigningError",
+    "SimulationError",
+    "TransactionDecodeError",
     # Constants
     "ALGORAND_MAINNET_CAIP2",
     "ALGORAND_TESTNET_CAIP2",
@@ -139,9 +139,11 @@ __all__ = [
     "ExactAvmPayloadV1",
     "ExactAvmPayloadV2",
     "TransactionGroupInfo",
-    # Signer protocols (implementations provided by integrator)
+    # Signers
     "ClientAvmSigner",
     "FacilitatorAvmSigner",
+    "PayerAvmSigner",
+    "ServerAvmSigner",
     # Utilities
     "caip2_from_genesis_hash",
     "decode_base64_transaction",

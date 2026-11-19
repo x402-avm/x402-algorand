@@ -1,12 +1,12 @@
 x402-algorand
-Copyright 2026 AI Economy Team
+Copyright 2026 x402-avm contributors
 
 This product is a modified version of x402-avm 2.0.2 by GoPlausible
 (https://github.com/GoPlausible/x402-avm), which is itself derived from the x402 SDK by Coinbase, now maintained by the x402 Foundation (https://github.com/x402-foundation/x402).
 Both are licensed under the Apache License, Version 2.0. Their NOTICE files are
 reproduced below.
 
-x402_algorand/ is derived from x402/mechanisms/avm/ of x402-avm 2.0.2 (moved to a top-level module; imports changed; native ALGO payments; algod token; CAIP-2 ids per the Algorand CAIP-2 profile; genesis check by derived id).
+x402_algorand/ is derived from x402/mechanisms/avm/ of x402-avm 2.0.2 (moved to a top-level module; imports changed; native ALGO payments; algod token; CAIP-2 ids per the Algorand CAIP-2 profile; genesis check by derived id; ready-made signers; exception classes; multisig and logic-signature payments; V1 wrappers accept the official SDK's V1 models).
 
 Licensed under the Apache License, Version 2.0 (see LICENSE). Unless required by
 applicable law or agreed to in writing, software distributed under the License is
