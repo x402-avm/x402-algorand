@@ -41,15 +41,18 @@ register_exact_avm_server(server)
 app = FastAPI()
 routes = {
     "GET /weather": {
-        "accepts": [{
-            "scheme": "exact",
-            "price": {"amount": "10000", "asset": "0"},  # 0.01 ALGO
-            "network": network,
-            "pay_to": signer.address,
-        }]
+        "accepts": [
+            {
+                "scheme": "exact",
+                "price": {"amount": "10000", "asset": "0"},  # 0.01 ALGO
+                "network": network,
+                "pay_to": signer.address,
+            }
+        ]
     }
 }
 app.middleware("http")(payment_middleware(routes, server))
+
 
 @app.get("/weather")
 async def weather():
